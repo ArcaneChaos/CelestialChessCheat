@@ -1,0 +1,343 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Celestial Companion</title>
+    
+    <!-- 1. Load React and Tailwind directly from the web -->
+    <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+    <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    <script src="https://cdn.tailwindcss.com"></script>
+    
+    <!-- 2. Set Background Color -->
+    <style>
+        body { background-color: #020617; color: white; }
+    </style>
+</head>
+<body>
+    <div id="root"></div>
+
+    <!-- 3. The Application Logic -->
+    <script type="text/babel">
+        const { useState, useEffect } = React;
+
+        // --- Icons (Embedded directly so no downloads needed) ---
+        const Icon = ({ path, size = 20, className = "" }) => (
+            <svg xmlns="http://www.w3.org/2000/svg" width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}>
+                {path}
+            </svg>
+        );
+
+        const Icons = {
+            RefreshCw: (p) => <Icon {...p} path={<><path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"/><path d="M21 3v5h-5"/><path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16"/><path d="M8 16H3v5"/></>} />,
+            Swords: (p) => <Icon {...p} path={<><polyline points="14.5 17.5 3 6 3 3 6 3 17.5 14.5"/><line x1="13" x2="19" y1="19" y2="13"/><line x1="16" x2="20" y1="16" y2="20"/><line x1="19" x2="21" y1="21" y2="19"/><polyline points="14.5 6.5 18 3 21 3 21 6 17.5 9.5"/><line x1="5" x2="9" y1="14" y2="18"/><line x1="7" x2="4" y1="17" y2="20"/><line x1="3" x2="5" y1="19" y2="21"/></>} />,
+            Bot: (p) => <Icon {...p} path={<><rect width="18" height="10" x="3" y="11" rx="2"/><circle cx="12" cy="5" r="2"/><path d="M12 7v4"/><line x1="8" x2="8" y1="16" y2="16"/><line x1="16" x2="16" y1="16" y2="16"/></>} />,
+            Cpu: (p) => <Icon {...p} path={<><rect x="4" y="4" width="16" height="16" rx="2"/><rect x="9" y="9" width="6" height="6"/><path d="M15 2v2"/><path d="M15 20v2"/><path d="M2 15h2"/><path d="M2 9h2"/><path d="M20 15h2"/><path d="M20 9h2"/><path d="M9 2v2"/><path d="M9 20v2"/></>} />,
+            Zap: (p) => <Icon {...p} path={<><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></>} />,
+            Lightbulb: (p) => <Icon {...p} path={<><path d="M15 14c.2-1 .7-1.7 1.5-2.5 1-1 1.5-2 1.5-3.5a6 6 0 0 0-6-6 6 6 0 0 0-6 6c0 1.5.5 2.5 1.5 3.5.8.8 1.3 1.5 1.5 2.5"/><path d="M9 18h6"/><path d="M10 22h4"/></>} />,
+            User: (p) => <Icon {...p} path={<><path d="M19 21v-2a4 4 0 0 0-4-4H9a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></>} />,
+            ShieldAlert: (p) => <Icon {...p} path={<><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10"/><line x1="12" x2="12" y1="8" y2="12"/><line x1="12" x2="12.01" y1="16" y2="16"/></>} />,
+        };
+
+        // --- Game Logic ---
+        const MODE_MENU = 'MENU';
+        const MODE_COMPANION = 'COMPANION';
+        const MODE_TRAINING = 'TRAINING';
+        const PLAYER_ME = 'ME';
+        const PLAYER_ENEMY = 'ENEMY';
+        const RESULT_DRAW = 'DRAW';
+        const INITIAL_INVENTORY = { 3: 2, 2: 3, 1: 3 }; // L, M, S
+        const WIN_LINES = [[0,1,2],[3,4,5],[6,7,8],[0,3,6],[1,4,7],[2,5,8],[0,4,8],[2,4,6]];
+
+        function App() {
+            const [appMode, setAppMode] = useState(MODE_MENU);
+            const [gameStarted, setGameStarted] = useState(false);
+            const [board, setBoard] = useState(Array(9).fill(null).map(() => []));
+            const [myInv, setMyInv] = useState({ ...INITIAL_INVENTORY });
+            const [enemyInv, setEnemyInv] = useState({ ...INITIAL_INVENTORY });
+            const [currentTurn, setCurrentTurn] = useState(PLAYER_ENEMY);
+            const [selectedPiece, setSelectedPiece] = useState(null);
+            const [suggestion, setSuggestion] = useState(null);
+            const [winner, setWinner] = useState(null);
+            const [isThinking, setIsThinking] = useState(false);
+            const [autoSuggest, setAutoSuggest] = useState(true);
+
+            // Helpers
+            const getTopPiece = (stack) => stack && stack.length > 0 ? stack[stack.length - 1] : null;
+            const isBoardEmpty = (b) => b.every(s => s.length === 0);
+            
+            const checkWinCondition = (currentBoard) => {
+                for (const line of WIN_LINES) {
+                    const [a, b, c] = line;
+                    const pA = getTopPiece(currentBoard[a]);
+                    const pB = getTopPiece(currentBoard[b]);
+                    const pC = getTopPiece(currentBoard[c]);
+                    if (pA && pB && pC && pA.player === pB.player && pA.player === pC.player) return pA.player;
+                }
+                return null;
+            };
+
+            const isValidMove = (currentBoard, index, size, player, inventory) => {
+                if (inventory[size] <= 0) return false;
+                const topPiece = getTopPiece(currentBoard[index]);
+                if (!topPiece) return true;
+                return size > topPiece.size;
+            };
+
+            const simulateMove = (currentBoard, move, player) => {
+                const newBoard = [...currentBoard];
+                newBoard[move.index] = [...newBoard[move.index], { player, size: move.size }];
+                return newBoard;
+            };
+
+            // Minimax
+            const evaluateBoardState = (currentBoard, player) => {
+                const win = checkWinCondition(currentBoard);
+                if (win === PLAYER_ME) return 10000;
+                if (win === PLAYER_ENEMY) return -10000;
+                let score = 0;
+                const centerPiece = getTopPiece(currentBoard[4]);
+                if (centerPiece) score += centerPiece.player === PLAYER_ME ? 50 : -50;
+                return score;
+            };
+
+            const getPossibleMoves = (currentBoard, player, inventory) => {
+                const moves = [];
+                for (let i = 0; i < 9; i++) {
+                    for (const size of [3, 2, 1]) {
+                        if (isValidMove(currentBoard, i, size, player, inventory)) moves.push({ index: i, size });
+                    }
+                }
+                return moves.sort((a, b) => b.size - a.size);
+            };
+
+            const minimax = (boardState, depth, alpha, beta, isMaximizing, myInventory, enemyInventory) => {
+                const win = checkWinCondition(boardState);
+                if (win === PLAYER_ME) return 10000 + depth;
+                if (win === PLAYER_ENEMY) return -10000 - depth;
+                if (depth === 0) return evaluateBoardState(boardState, PLAYER_ME);
+
+                if (isMaximizing) {
+                    let maxEval = -Infinity;
+                    const moves = getPossibleMoves(boardState, PLAYER_ME, myInventory);
+                    if (moves.length === 0) return 0;
+                    for (const move of moves) {
+                        const nextInv = { ...myInventory, [move.size]: myInventory[move.size] - 1 };
+                        const nextBoard = simulateMove(boardState, move, PLAYER_ME);
+                        const evalScore = minimax(nextBoard, depth - 1, alpha, beta, false, nextInv, enemyInventory);
+                        maxEval = Math.max(maxEval, evalScore);
+                        alpha = Math.max(alpha, evalScore);
+                        if (beta <= alpha) break;
+                    }
+                    return maxEval;
+                } else {
+                    let minEval = Infinity;
+                    const moves = getPossibleMoves(boardState, PLAYER_ENEMY, enemyInventory);
+                    if (moves.length === 0) return 0;
+                    for (const move of moves) {
+                        const nextInv = { ...enemyInventory, [move.size]: enemyInventory[move.size] - 1 };
+                        const nextBoard = simulateMove(boardState, move, PLAYER_ENEMY);
+                        const evalScore = minimax(nextBoard, depth - 1, alpha, beta, true, myInventory, nextInv);
+                        minEval = Math.min(minEval, evalScore);
+                        beta = Math.min(beta, evalScore);
+                        if (beta <= alpha) break;
+                    }
+                    return minEval;
+                }
+            };
+
+            // Actions
+            const calculateSuggestion = () => {
+                setIsThinking(true);
+                setTimeout(() => {
+                    let bestScore = -Infinity, bestMove = null;
+                    const moves = getPossibleMoves(board, PLAYER_ME, myInv);
+                    
+                    // Win Now
+                    for(const move of moves) {
+                        if(checkWinCondition(simulateMove(board, move, PLAYER_ME)) === PLAYER_ME) {
+                            setSuggestion({...move, reason: 'WIN NOW'}); setIsThinking(false); return;
+                        }
+                    }
+                    // Deep Search
+                    for (const move of moves) {
+                        const nextInv = { ...myInv, [move.size]: myInv[move.size] - 1 };
+                        const score = minimax(simulateMove(board, move, PLAYER_ME), 4, -Infinity, Infinity, false, nextInv, enemyInv);
+                        if (score > bestScore) { bestScore = score; bestMove = move; }
+                    }
+                    setSuggestion(bestMove); setIsThinking(false);
+                }, 50);
+            };
+
+            const performAiMove = () => {
+                setIsThinking(true);
+                setTimeout(() => {
+                    let bestScore = Infinity, bestMove = null;
+                    const moves = getPossibleMoves(board, PLAYER_ENEMY, enemyInv);
+                    // Win Now Enemy
+                    for(const move of moves) {
+                        if(checkWinCondition(simulateMove(board, move, PLAYER_ENEMY)) === PLAYER_ENEMY) {
+                            executeMove(move, PLAYER_ENEMY); setIsThinking(false); return;
+                        }
+                    }
+                    // Deep Search Enemy
+                    for (const move of moves) {
+                        const nextInv = { ...enemyInv, [move.size]: enemyInv[move.size] - 1 };
+                        const score = minimax(simulateMove(board, move, PLAYER_ENEMY), 4, -Infinity, Infinity, true, myInv, nextInv);
+                        if (score < bestScore) { bestScore = score; bestMove = move; }
+                    }
+                    if (bestMove) executeMove(bestMove, PLAYER_ENEMY);
+                    setIsThinking(false);
+                }, 800);
+            };
+
+            const executeMove = (move, player) => {
+                const newBoard = simulateMove(board, move, player);
+                setBoard(newBoard);
+                if (player === PLAYER_ME) setMyInv(p => ({ ...p, [move.size]: p[move.size] - 1 }));
+                else setEnemyInv(p => ({ ...p, [move.size]: p[move.size] - 1 }));
+                
+                const win = checkWinCondition(newBoard);
+                if (win) setWinner(win);
+                else {
+                   const nextP = player === PLAYER_ME ? PLAYER_ENEMY : PLAYER_ME;
+                   const inv = nextP === PLAYER_ME ? myInv : enemyInv; // approx
+                   setCurrentTurn(nextP);
+                }
+            };
+
+            useEffect(() => {
+                if (gameStarted && !winner) {
+                    setSuggestion(null);
+                    const win = checkWinCondition(board);
+                    if (win) { setWinner(win); return; }
+                    
+                    const inv = currentTurn === PLAYER_ME ? myInv : enemyInv;
+                    if (getPossibleMoves(board, currentTurn, inv).length === 0) { setWinner(RESULT_DRAW); return; }
+
+                    if (appMode === MODE_COMPANION && currentTurn === PLAYER_ME && autoSuggest && !isBoardEmpty(board)) calculateSuggestion();
+                    if (appMode === MODE_TRAINING && currentTurn === PLAYER_ENEMY) performAiMove();
+                }
+            }, [board, currentTurn, gameStarted, winner, autoSuggest]);
+
+            const handleStart = (playerFirst) => {
+                setBoard(Array(9).fill(null).map(() => []));
+                setMyInv({ ...INITIAL_INVENTORY }); setEnemyInv({ ...INITIAL_INVENTORY });
+                setWinner(null); setGameStarted(true); setCurrentTurn(playerFirst ? PLAYER_ME : PLAYER_ENEMY);
+            };
+
+            const handleCellClick = (index) => {
+                if (!gameStarted || winner || !selectedPiece) return;
+                if (appMode === MODE_TRAINING && currentTurn === PLAYER_ENEMY) return;
+                if (selectedPiece.player !== currentTurn) return;
+                
+                const { player, size } = selectedPiece;
+                const inv = player === PLAYER_ME ? myInv : enemyInv;
+                if (isValidMove(board, index, size, player, inv)) {
+                    executeMove({ index, size }, player);
+                    setSelectedPiece(null);
+                }
+            };
+
+            const renderPiece = (size, player, isGhost) => {
+                const s = size === 3 ? 'w-16 h-16 text-2xl' : size === 2 ? 'w-10 h-10 text-xl' : 'w-6 h-6 text-sm';
+                const c = player === PLAYER_ME ? 'bg-amber-500 border-amber-300 text-amber-950' : 'bg-indigo-600 border-indigo-400 text-indigo-100';
+                return <div className={`rounded-full flex items-center justify-center font-bold border-2 shadow-sm ${s} ${c} ${isGhost ? 'opacity-50 animate-pulse' : ''}`}>{size === 3 ? 'L' : size === 2 ? 'M' : 'S'}</div>;
+            };
+
+            const renderInv = (player, inv) => {
+                const isMy = player === PLAYER_ME;
+                const active = currentTurn === player;
+                const disabled = appMode === MODE_TRAINING && !isMy;
+                return (
+                    <div className={`flex flex-col items-center p-3 rounded-xl transition-all duration-300 ${active ? (isMy ? 'bg-amber-900/30 ring-2 ring-amber-500' : 'bg-indigo-900/30 ring-2 ring-indigo-500') : 'opacity-60 grayscale'}`}>
+                        <span className={`text-xs font-bold uppercase mb-2 ${isMy ? 'text-amber-400' : 'text-indigo-400'}`}>{isMy ? 'My Inventory' : 'Enemy Inventory'}</span>
+                        <div className="flex gap-2">
+                            {[3, 2, 1].map(size => (
+                                <button key={size} disabled={!active || inv[size] === 0 || winner || disabled} onClick={() => setSelectedPiece({ player, size })} className={`relative flex flex-col items-center justify-center w-12 h-14 rounded-lg border border-white/10 transition-all ${selectedPiece?.player === player && selectedPiece?.size === size ? (isMy ? 'bg-amber-600 -translate-y-2' : 'bg-indigo-600 -translate-y-2') : disabled ? 'bg-slate-800' : 'bg-slate-800 hover:bg-slate-700'} ${(inv[size] === 0 || disabled) ? 'opacity-40' : ''}`}>
+                                    <span className="font-bold text-slate-200">{size === 3 ? 'L' : size === 2 ? 'M' : 'S'}</span>
+                                    <span className="text-[10px] bg-black/40 px-1.5 rounded mt-1">{inv[size]}</span>
+                                </button>
+                            ))}
+                        </div>
+                    </div>
+                );
+            };
+
+            // --- MENU RENDER ---
+            if (appMode === MODE_MENU) {
+                return (
+                    <div className="min-h-screen flex flex-col items-center justify-center p-4 font-sans text-center">
+                        <h1 className="text-4xl font-black text-transparent bg-clip-text bg-gradient-to-br from-amber-300 to-purple-400 mb-2">Celestial Code</h1>
+                        <p className="text-slate-500 mb-8">Master the board.</p>
+                        <div className="grid gap-4 w-full max-w-sm">
+                            <button onClick={() => setAppMode(MODE_COMPANION)} className="p-6 bg-slate-900 border border-slate-700 rounded-2xl flex items-center justify-between hover:bg-slate-800"><div className="text-left"><span className="block text-xl font-bold text-amber-100">Companion Mode</span><span className="text-xs text-slate-400">Mirror game. Get hints.</span></div><Icons.Swords size={32} className="text-amber-500"/></button>
+                            <button onClick={() => setAppMode(MODE_TRAINING)} className="p-6 bg-slate-900 border border-slate-700 rounded-2xl flex items-center justify-between hover:bg-slate-800"><div className="text-left"><span className="block text-xl font-bold text-indigo-100">Training Mode</span><span className="text-xs text-slate-400">Play against AI.</span></div><Icons.Bot size={32} className="text-indigo-500"/></button>
+                        </div>
+                    </div>
+                );
+            }
+
+            // --- SETUP RENDER ---
+            if (!gameStarted) {
+                return (
+                    <div className="min-h-screen flex flex-col items-center justify-center p-4 font-sans">
+                        <div className="w-full max-w-sm mb-6 text-slate-500 cursor-pointer" onClick={() => setAppMode(MODE_MENU)}>← Back to Menu</div>
+                        <div className="bg-slate-900 p-8 rounded-2xl border border-slate-800 shadow-2xl max-w-sm w-full">
+                            <h2 className="text-2xl font-bold mb-6 text-center">{appMode === MODE_COMPANION ? "Companion Setup" : "Training Setup"}</h2>
+                            <button onClick={() => handleStart(true)} className="w-full py-4 bg-gradient-to-r from-amber-600 to-amber-500 rounded-xl font-bold text-lg mb-4">{appMode === MODE_COMPANION ? "I am Ivory (First)" : "Play First"}</button>
+                            <button onClick={() => handleStart(false)} className="w-full py-4 bg-slate-800 rounded-xl font-bold text-lg text-slate-400 hover:text-white">{appMode === MODE_COMPANION ? "I am Ebony (Second)" : "Play Second"}</button>
+                        </div>
+                    </div>
+                );
+            }
+
+            // --- GAME RENDER ---
+            return (
+                <div className="min-h-screen p-2 flex flex-col items-center max-w-lg mx-auto font-sans">
+                    <div className="w-full flex justify-between items-center mb-4 pt-2">
+                        <h2 className="font-bold text-lg flex items-center gap-2 text-slate-300">{appMode === MODE_TRAINING ? <Icons.Bot size={18}/> : <Icons.Cpu size={18}/>} {appMode === MODE_TRAINING ? "Training" : "Engine"}</h2>
+                        <div className="flex gap-2">
+                            {appMode === MODE_COMPANION && <button onClick={() => setAutoSuggest(!autoSuggest)} className={`flex items-center gap-1 text-[10px] px-2 py-1 rounded border ${autoSuggest ? 'bg-green-900/40 border-green-500 text-green-300' : 'bg-slate-800 border-slate-600 text-slate-500'}`}><Icons.Zap size={10}/> Auto: {autoSuggest ? 'ON' : 'OFF'}</button>}
+                            <button onClick={() => {setGameStarted(false); setAppMode(MODE_MENU);}} className="p-2 bg-slate-800 rounded-full text-slate-400"><Icons.RefreshCw size={16}/></button>
+                        </div>
+                    </div>
+
+                    <div className="w-full mb-4">{renderInv(PLAYER_ENEMY, enemyInv)}</div>
+
+                    <div className="h-16 w-full flex items-center justify-center mb-2 px-2">
+                        {winner ? <div className={`px-6 py-2 rounded-lg font-black text-xl animate-bounce ${winner === PLAYER_ME ? 'bg-amber-500 text-black' : winner === PLAYER_ENEMY ? 'bg-indigo-500 text-white' : 'bg-slate-600 text-white'}`}>{winner === PLAYER_ME ? 'VICTORY' : winner === PLAYER_ENEMY ? 'DEFEAT' : 'DRAW'}</div> :
+                        currentTurn === PLAYER_ME ? 
+                            <div className="flex w-full items-center justify-between gap-3 bg-amber-950/40 px-3 py-2 rounded-lg border border-amber-500/30">
+                                <div className="flex items-center gap-3"><Icons.User className={`text-amber-400 w-5 h-5 ${isThinking ? 'animate-spin' : ''}`}/><div className="flex flex-col"><span className="text-xs text-amber-300 font-bold uppercase">Your Turn</span><span className="text-sm font-medium text-amber-100">{isThinking ? 'Thinking...' : appMode === MODE_COMPANION && suggestion ? `Tip: Place ${suggestion.size === 3 ? 'Large' : suggestion.size === 2 ? 'Medium' : 'Small'}` : 'Select a piece'}</span></div></div>
+                                {appMode === MODE_COMPANION && !suggestion && !isThinking && <button onClick={calculateSuggestion} className="text-xs bg-amber-600 text-white px-3 py-2 rounded font-bold flex items-center gap-1"><Icons.Lightbulb size={12}/> Suggest</button>}
+                            </div> : 
+                            <div className="text-slate-500 text-sm flex items-center gap-2 animate-pulse bg-slate-900 px-4 py-2 rounded-full border border-slate-800">{appMode === MODE_TRAINING ? <Icons.Bot size={16}/> : <Icons.ShieldAlert size={16}/>} {appMode === MODE_TRAINING ? "AI moving..." : "Waiting for Enemy..."}</div>
+                        }
+                    </div>
+
+                    <div className="relative bg-[#dccfab] p-2 rounded shadow-2xl border-[6px] border-[#6b5b3a]">
+                        <div className="grid grid-cols-3 gap-1 bg-[#6b5b3a] w-fit mx-auto">
+                            {board.map((stack, index) => {
+                                const top = getTopPiece(stack);
+                                const isTarget = appMode === MODE_COMPANION && suggestion && suggestion.index === index && currentTurn === PLAYER_ME;
+                                return <button key={index} onClick={() => handleCellClick(index)} className={`w-24 h-24 relative bg-[#eaddb6] flex items-center justify-center active:scale-95 transition-all ${isTarget ? 'ring-[6px] ring-inset ring-green-500 bg-green-500/20' : ''}`}>
+                                    {top && renderPiece(top.size, top.player)}
+                                    {isTarget && <div className="absolute inset-0 flex items-center justify-center z-10 pointer-events-none">{renderPiece(suggestion.size, PLAYER_ME, true)}</div>}
+                                </button>
+                            })}
+                        </div>
+                    </div>
+
+                    <div className="w-full mt-4">{renderInv(PLAYER_ME, myInv)}</div>
+                </div>
+            );
+        }
+
+        const root = ReactDOM.createRoot(document.getElementById('root'));
+        root.render(<App />);
+    </script>
+</body>
+</html>
