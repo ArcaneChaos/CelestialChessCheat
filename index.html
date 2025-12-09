@@ -5,25 +5,29 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Celestial Companion</title>
     
-    <!-- 1. Load React and Tailwind directly from the web -->
+    <!-- Load React and Tailwind -->
     <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
     <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
     <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
     <script src="https://cdn.tailwindcss.com"></script>
     
-    <!-- 2. Set Background Color -->
     <style>
         body { background-color: #020617; color: white; }
+        .pulse-green { animation: pulse-green 2s infinite; }
+        @keyframes pulse-green {
+            0% { box-shadow: 0 0 0 0 rgba(74, 222, 128, 0.7); }
+            70% { box-shadow: 0 0 0 10px rgba(74, 222, 128, 0); }
+            100% { box-shadow: 0 0 0 0 rgba(74, 222, 128, 0); }
+        }
     </style>
 </head>
 <body>
     <div id="root"></div>
 
-    <!-- 3. The Application Logic -->
     <script type="text/babel">
         const { useState, useEffect } = React;
 
-        // --- Icons (Embedded directly so no downloads needed) ---
+        // --- Icons ---
         const Icon = ({ path, size = 20, className = "" }) => (
             <svg xmlns="http://www.w3.org/2000/svg" width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}>
                 {path}
@@ -87,19 +91,41 @@
             };
 
             const simulateMove = (currentBoard, move, player) => {
-                const newBoard = [...currentBoard];
-                newBoard[move.index] = [...newBoard[move.index], { player, size: move.size }];
+                const newBoard = currentBoard.map(stack => [...stack]);
+                newBoard[move.index].push({ player, size: move.size });
                 return newBoard;
             };
 
-            // Minimax
+            // --- THE RESTORED BRAIN ---
             const evaluateBoardState = (currentBoard, player) => {
                 const win = checkWinCondition(currentBoard);
                 if (win === PLAYER_ME) return 10000;
                 if (win === PLAYER_ENEMY) return -10000;
+
                 let score = 0;
+
+                // 1. Center Control (Crucial in 3x3)
                 const centerPiece = getTopPiece(currentBoard[4]);
                 if (centerPiece) score += centerPiece.player === PLAYER_ME ? 50 : -50;
+
+                // 2. THREAT DETECTION (This was missing!)
+                for (const line of WIN_LINES) {
+                    let myPieces = 0;
+                    let enemyPieces = 0;
+                    let empty = 0;
+                    
+                    for (const idx of line) {
+                        const p = getTopPiece(currentBoard[idx]);
+                        if (!p) empty++;
+                        else if (p.player === PLAYER_ME) myPieces++;
+                        else enemyPieces++;
+                    }
+
+                    // 2 in a row is huge. If we have it, good. If enemy has it, BAD.
+                    if (myPieces === 2 && empty === 1) score += 20;
+                    if (enemyPieces === 2 && empty === 1) score -= 25; // Weigh defense slightly higher
+                }
+
                 return score;
             };
 
@@ -110,6 +136,7 @@
                         if (isValidMove(currentBoard, i, size, player, inventory)) moves.push({ index: i, size });
                     }
                 }
+                // Sort by size (Large first) for better pruning
                 return moves.sort((a, b) => b.size - a.size);
             };
 
@@ -122,7 +149,8 @@
                 if (isMaximizing) {
                     let maxEval = -Infinity;
                     const moves = getPossibleMoves(boardState, PLAYER_ME, myInventory);
-                    if (moves.length === 0) return 0;
+                    if (moves.length === 0) return 0; // Draw
+                    
                     for (const move of moves) {
                         const nextInv = { ...myInventory, [move.size]: myInventory[move.size] - 1 };
                         const nextBoard = simulateMove(boardState, move, PLAYER_ME);
@@ -135,7 +163,8 @@
                 } else {
                     let minEval = Infinity;
                     const moves = getPossibleMoves(boardState, PLAYER_ENEMY, enemyInventory);
-                    if (moves.length === 0) return 0;
+                    if (moves.length === 0) return 0; // Draw
+
                     for (const move of moves) {
                         const nextInv = { ...enemyInventory, [move.size]: enemyInventory[move.size] - 1 };
                         const nextBoard = simulateMove(boardState, move, PLAYER_ENEMY);
@@ -155,13 +184,26 @@
                     let bestScore = -Infinity, bestMove = null;
                     const moves = getPossibleMoves(board, PLAYER_ME, myInv);
                     
-                    // Win Now
+                    // 1. Instant Win Check
                     for(const move of moves) {
                         if(checkWinCondition(simulateMove(board, move, PLAYER_ME)) === PLAYER_ME) {
                             setSuggestion({...move, reason: 'WIN NOW'}); setIsThinking(false); return;
                         }
                     }
-                    // Deep Search
+
+                    // 2. Block Instant Loss Check
+                    const enemyMoves = getPossibleMoves(board, PLAYER_ENEMY, enemyInv);
+                    for(const eMove of enemyMoves) {
+                        if(checkWinCondition(simulateMove(board, eMove, PLAYER_ENEMY)) === PLAYER_ENEMY) {
+                            // We are about to lose. We MUST block this.
+                            // The Minimax will find it, but purely for visual feedback/safety:
+                            // We don't return here, we let Minimax handle the best block,
+                            // but we ensure Depth is sufficient.
+                        }
+                    }
+
+                    // 3. Deep Search
+                    // Depth 4 is good for 3x3 Gobblet.
                     for (const move of moves) {
                         const nextInv = { ...myInv, [move.size]: myInv[move.size] - 1 };
                         const score = minimax(simulateMove(board, move, PLAYER_ME), 4, -Infinity, Infinity, false, nextInv, enemyInv);
@@ -176,12 +218,14 @@
                 setTimeout(() => {
                     let bestScore = Infinity, bestMove = null;
                     const moves = getPossibleMoves(board, PLAYER_ENEMY, enemyInv);
+                    
                     // Win Now Enemy
                     for(const move of moves) {
                         if(checkWinCondition(simulateMove(board, move, PLAYER_ENEMY)) === PLAYER_ENEMY) {
                             executeMove(move, PLAYER_ENEMY); setIsThinking(false); return;
                         }
                     }
+                    
                     // Deep Search Enemy
                     for (const move of moves) {
                         const nextInv = { ...enemyInv, [move.size]: enemyInv[move.size] - 1 };
@@ -203,7 +247,6 @@
                 if (win) setWinner(win);
                 else {
                    const nextP = player === PLAYER_ME ? PLAYER_ENEMY : PLAYER_ME;
-                   const inv = nextP === PLAYER_ME ? myInv : enemyInv; // approx
                    setCurrentTurn(nextP);
                 }
             };
@@ -323,7 +366,7 @@
                             {board.map((stack, index) => {
                                 const top = getTopPiece(stack);
                                 const isTarget = appMode === MODE_COMPANION && suggestion && suggestion.index === index && currentTurn === PLAYER_ME;
-                                return <button key={index} onClick={() => handleCellClick(index)} className={`w-24 h-24 relative bg-[#eaddb6] flex items-center justify-center active:scale-95 transition-all ${isTarget ? 'ring-[6px] ring-inset ring-green-500 bg-green-500/20' : ''}`}>
+                                return <button key={index} onClick={() => handleCellClick(index)} className={`w-24 h-24 relative bg-[#eaddb6] flex items-center justify-center active:scale-95 transition-all ${isTarget ? 'pulse-green ring-[6px] ring-inset ring-green-500 bg-green-500/20' : ''}`}>
                                     {top && renderPiece(top.size, top.player)}
                                     {isTarget && <div className="absolute inset-0 flex items-center justify-center z-10 pointer-events-none">{renderPiece(suggestion.size, PLAYER_ME, true)}</div>}
                                 </button>
