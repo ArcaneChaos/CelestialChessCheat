@@ -126,9 +126,9 @@
                         else enemyPieces++;
                     }
 
-                    // 2 in a row is huge.
-                    if (myPieces === 2 && empty === 1) score += 20;
-                    if (enemyPieces === 2 && empty === 1) score -= 25; 
+                    // 2 in a row is huge. Increased weight to prioritize blocking/winning lines.
+                    if (myPieces === 2 && empty === 1) score += 60;
+                    if (enemyPieces === 2 && empty === 1) score -= 65; 
                 }
 
                 return score;
@@ -181,53 +181,87 @@
                 }
             };
 
-            // Actions
+            // Unified Brain
+            const getBestMove = (isAi) => {
+                const player = isAi ? PLAYER_ENEMY : PLAYER_ME;
+                const opponent = isAi ? PLAYER_ME : PLAYER_ENEMY;
+                const inv = isAi ? enemyInv : myInv;
+                const oppInv = isAi ? myInv : enemyInv;
+
+                // 1. Win Now?
+                const moves = getPossibleMoves(board, player, inv);
+                for(const move of moves) {
+                    if(checkWinCondition(simulateMove(board, move, player)) === player) return { ...move, reason: 'WIN' };
+                }
+
+                // 2. Block Now? (Emergency Shield)
+                // Check if opponent has ANY winning move on current board.
+                const oppMoves = getPossibleMoves(board, opponent, oppInv);
+                const oppWinMove = oppMoves.find(m => checkWinCondition(simulateMove(board, m, opponent)) === opponent);
+                
+                let candidateMoves = moves;
+
+                if (oppWinMove) {
+                    // Opponent can win! We MUST find a move that prevents this.
+                    // Filter candidates: only keep moves where opponent CANNOT win immediately after.
+                    candidateMoves = moves.filter(move => {
+                        const nextBoard = simulateMove(board, move, player);
+                        // Check opponent moves on this new board
+                        const nextOppMoves = getPossibleMoves(nextBoard, opponent, oppInv);
+                        // Is there still a win?
+                        return !nextOppMoves.some(om => checkWinCondition(simulateMove(nextBoard, om, opponent)) === opponent);
+                    });
+                    
+                    // If we found safe blocking moves, restrict our search to them.
+                    // If we found none, we are likely checkmated, but we'll fall back to normal Minimax to go down fighting.
+                    if (candidateMoves.length > 0) {
+                        // console.log("BLOCKING MODE ENGAGED");
+                    } else {
+                        candidateMoves = moves; // Fallback
+                    }
+                }
+
+                // 3. Minimax on Candidates
+                let bestScore = isAi ? Infinity : -Infinity;
+                let bestMove = candidateMoves.length > 0 ? candidateMoves[0] : null;
+                
+                for (const move of candidateMoves) {
+                    const nextInv = { ...inv, [move.size]: inv[move.size] - 1 };
+                    
+                    // Note: minimax always expects (myInv, enemyInv) order in args.
+                    // If isAi (Enemy), next turn is Me (Max), so we pass (oppInv, nextInv)
+                    // If !isAi (Me), next turn is Enemy (Min), so we pass (nextInv, oppInv)
+                    let score;
+                    if (isAi) {
+                         score = minimax(simulateMove(board, move, player), 4, -Infinity, Infinity, true, oppInv, nextInv);
+                    } else {
+                         score = minimax(simulateMove(board, move, player), 4, -Infinity, Infinity, false, nextInv, oppInv);
+                    }
+
+                    if (isAi) {
+                        if (score < bestScore) { bestScore = score; bestMove = move; }
+                    } else {
+                        if (score > bestScore) { bestScore = score; bestMove = move; }
+                    }
+                }
+                
+                return bestMove;
+            };
+
             const calculateSuggestion = () => {
                 setIsThinking(true);
                 setTimeout(() => {
-                    let bestScore = -Infinity, bestMove = null;
-                    const moves = getPossibleMoves(board, PLAYER_ME, myInv);
-                    
-                    for(const move of moves) {
-                        if(checkWinCondition(simulateMove(board, move, PLAYER_ME)) === PLAYER_ME) {
-                            setSuggestion({...move, reason: 'WIN NOW'}); setIsThinking(false); return;
-                        }
-                    }
-
-                    const enemyMoves = getPossibleMoves(board, PLAYER_ENEMY, enemyInv);
-                    for(const eMove of enemyMoves) {
-                        if(checkWinCondition(simulateMove(board, eMove, PLAYER_ENEMY)) === PLAYER_ENEMY) {
-                            // Defensive block needed logic
-                        }
-                    }
-
-                    for (const move of moves) {
-                        const nextInv = { ...myInv, [move.size]: myInv[move.size] - 1 };
-                        const score = minimax(simulateMove(board, move, PLAYER_ME), 4, -Infinity, Infinity, false, nextInv, enemyInv);
-                        if (score > bestScore) { bestScore = score; bestMove = move; }
-                    }
-                    setSuggestion(bestMove); setIsThinking(false);
+                    const move = getBestMove(false);
+                    setSuggestion(move); 
+                    setIsThinking(false);
                 }, 50);
             };
 
             const performAiMove = () => {
                 setIsThinking(true);
                 setTimeout(() => {
-                    let bestScore = Infinity, bestMove = null;
-                    const moves = getPossibleMoves(board, PLAYER_ENEMY, enemyInv);
-                    
-                    for(const move of moves) {
-                        if(checkWinCondition(simulateMove(board, move, PLAYER_ENEMY)) === PLAYER_ENEMY) {
-                            executeMove(move, PLAYER_ENEMY); setIsThinking(false); return;
-                        }
-                    }
-                    
-                    for (const move of moves) {
-                        const nextInv = { ...enemyInv, [move.size]: enemyInv[move.size] - 1 };
-                        const score = minimax(simulateMove(board, move, PLAYER_ENEMY), 4, -Infinity, Infinity, true, myInv, nextInv);
-                        if (score < bestScore) { bestScore = score; bestMove = move; }
-                    }
-                    if (bestMove) executeMove(bestMove, PLAYER_ENEMY);
+                    const move = getBestMove(true);
+                    if (move) executeMove(move, PLAYER_ENEMY);
                     setIsThinking(false);
                 }, 800);
             };
