@@ -25,7 +25,7 @@
     <div id="root"></div>
 
     <script type="text/babel">
-        const { useState, useEffect } = React;
+        const { useState, useEffect, useRef } = React;
 
         // --- Icons ---
         const Icon = ({ path, size = 20, className = "" }) => (
@@ -101,23 +101,28 @@
                 return newBoard;
             };
 
-            // --- THE RESTORED BRAIN ---
-            const evaluateBoardState = (currentBoard, player) => {
+            // --- THE GRANDMASTER BRAIN ---
+            const evaluateBoardState = (currentBoard, myInventory, enemyInventory) => {
                 const win = checkWinCondition(currentBoard);
-                if (win === PLAYER_ME) return 10000;
-                if (win === PLAYER_ENEMY) return -10000;
+                if (win === PLAYER_ME) return 100000;
+                if (win === PLAYER_ENEMY) return -100000;
 
                 let score = 0;
 
-                // 1. Center Control (Crucial in 3x3)
+                // 1. Heavy Center Control
                 const centerPiece = getTopPiece(currentBoard[4]);
-                if (centerPiece) score += centerPiece.player === PLAYER_ME ? 50 : -50;
+                if (centerPiece) {
+                    // Holding center with a Large piece is massive dominance
+                    const val = centerPiece.size === 3 ? 120 : 60;
+                    score += centerPiece.player === PLAYER_ME ? val : -val;
+                }
 
-                // 2. THREAT DETECTION
+                // 2. Advanced Threat Detection
                 for (const line of WIN_LINES) {
                     let myPieces = 0;
                     let enemyPieces = 0;
                     let empty = 0;
+                    let blocked = false;
                     
                     for (const idx of line) {
                         const p = getTopPiece(currentBoard[idx]);
@@ -126,34 +131,67 @@
                         else enemyPieces++;
                     }
 
-                    // 2 in a row is huge. Increased weight to prioritize blocking/winning lines.
-                    if (myPieces === 2 && empty === 1) score += 60;
-                    if (enemyPieces === 2 && empty === 1) score -= 65; 
+                    // Prioritize 2-in-a-row much higher to force blocks or wins
+                    if (myPieces === 2 && empty === 1) score += 200; 
+                    if (enemyPieces === 2 && empty === 1) score -= 210; // Slightly more afraid of losing
+                    
+                    // Small bonus for 1 piece with 2 open spots (potential line)
+                    if (myPieces === 1 && empty === 2) score += 10;
+                    if (enemyPieces === 1 && empty === 2) score -= 10;
                 }
+
+                // 3. Inventory Conservation (Don't waste Large pieces early)
+                score += (myInventory[3] * 15);
+                score -= (enemyInventory[3] * 15);
 
                 return score;
             };
 
+            // Improved Move Sorting for better Alpha-Beta Pruning
             const getPossibleMoves = (currentBoard, player, inventory) => {
                 const moves = [];
                 for (let i = 0; i < 9; i++) {
                     for (const size of [3, 2, 1]) {
-                        if (isValidMove(currentBoard, i, size, player, inventory)) moves.push({ index: i, size });
+                        if (isValidMove(currentBoard, i, size, player, inventory)) {
+                            // Heuristic sort score
+                            let sortScore = size * 10; 
+                            const top = getTopPiece(currentBoard[i]);
+                            // Bonus for gobbling an opponent (high priority to check these branches)
+                            if (top && top.player !== player) sortScore += 100;
+                            // Bonus for center
+                            if (i === 4) sortScore += 50;
+
+                            moves.push({ index: i, size, sortScore });
+                        }
                     }
                 }
-                return moves.sort((a, b) => b.size - a.size);
+                // Sort descending by heuristic score
+                return moves.sort((a, b) => b.sortScore - a.sortScore);
             };
 
+            // Transposition Table (Memoization) to handle depth 5
+            const memo = new Map();
+
             const minimax = (boardState, depth, alpha, beta, isMaximizing, myInventory, enemyInventory) => {
+                // Generate a simple hash key for the board + inv + turn
+                const boardStr = JSON.stringify(boardState) + JSON.stringify(myInventory) + JSON.stringify(enemyInventory) + isMaximizing;
+                if (memo.has(boardStr)) return memo.get(boardStr);
+
                 const win = checkWinCondition(boardState);
-                if (win === PLAYER_ME) return 10000 + depth;
-                if (win === PLAYER_ENEMY) return -10000 - depth;
-                if (depth === 0) return evaluateBoardState(boardState, PLAYER_ME);
+                if (win === PLAYER_ME) return 100000 + depth;
+                if (win === PLAYER_ENEMY) return -100000 - depth;
+                
+                // Depth 5 is the goal, but we fallback to eval at 0
+                if (depth === 0) {
+                    const score = evaluateBoardState(boardState, myInventory, enemyInventory);
+                    memo.set(boardStr, score);
+                    return score;
+                }
 
                 if (isMaximizing) {
                     let maxEval = -Infinity;
                     const moves = getPossibleMoves(boardState, PLAYER_ME, myInventory);
-                    if (moves.length === 0) return 0; // Draw
+                    if (moves.length === 0) return -5000; // Loss if no moves
                     
                     for (const move of moves) {
                         const nextInv = { ...myInventory, [move.size]: myInventory[move.size] - 1 };
@@ -163,11 +201,12 @@
                         alpha = Math.max(alpha, evalScore);
                         if (beta <= alpha) break;
                     }
+                    memo.set(boardStr, maxEval);
                     return maxEval;
                 } else {
                     let minEval = Infinity;
                     const moves = getPossibleMoves(boardState, PLAYER_ENEMY, enemyInventory);
-                    if (moves.length === 0) return 0; // Draw
+                    if (moves.length === 0) return 5000; // Win if opponent has no moves
 
                     for (const move of moves) {
                         const nextInv = { ...enemyInventory, [move.size]: enemyInventory[move.size] - 1 };
@@ -177,65 +216,54 @@
                         beta = Math.min(beta, evalScore);
                         if (beta <= alpha) break;
                     }
+                    memo.set(boardStr, minEval);
                     return minEval;
                 }
             };
 
-            // Unified Brain
             const getBestMove = (isAi) => {
+                memo.clear(); // Clear cache for new turn
                 const player = isAi ? PLAYER_ENEMY : PLAYER_ME;
                 const opponent = isAi ? PLAYER_ME : PLAYER_ENEMY;
                 const inv = isAi ? enemyInv : myInv;
                 const oppInv = isAi ? myInv : enemyInv;
 
-                // 1. Win Now?
+                // 1. Instant Win Check
                 const moves = getPossibleMoves(board, player, inv);
                 for(const move of moves) {
                     if(checkWinCondition(simulateMove(board, move, player)) === player) return { ...move, reason: 'WIN' };
                 }
 
-                // 2. Block Now? (Emergency Shield)
-                // Check if opponent has ANY winning move on current board.
+                // 2. Emergency Block (Still keep this safety net)
                 const oppMoves = getPossibleMoves(board, opponent, oppInv);
                 const oppWinMove = oppMoves.find(m => checkWinCondition(simulateMove(board, m, opponent)) === opponent);
                 
                 let candidateMoves = moves;
-
                 if (oppWinMove) {
-                    // Opponent can win! We MUST find a move that prevents this.
-                    // Filter candidates: only keep moves where opponent CANNOT win immediately after.
                     candidateMoves = moves.filter(move => {
                         const nextBoard = simulateMove(board, move, player);
-                        // Check opponent moves on this new board
                         const nextOppMoves = getPossibleMoves(nextBoard, opponent, oppInv);
-                        // Is there still a win?
                         return !nextOppMoves.some(om => checkWinCondition(simulateMove(nextBoard, om, opponent)) === opponent);
                     });
-                    
-                    // If we found safe blocking moves, restrict our search to them.
-                    // If we found none, we are likely checkmated, but we'll fall back to normal Minimax to go down fighting.
-                    if (candidateMoves.length > 0) {
-                        // console.log("BLOCKING MODE ENGAGED");
-                    } else {
-                        candidateMoves = moves; // Fallback
-                    }
+                    if (candidateMoves.length === 0) candidateMoves = moves; // Resign to fate
                 }
 
-                // 3. Minimax on Candidates
+                // 3. Deep Minimax (Depth 5)
                 let bestScore = isAi ? Infinity : -Infinity;
                 let bestMove = candidateMoves.length > 0 ? candidateMoves[0] : null;
+                
+                // Limit candidate moves if too many to prevent lag at depth 5?
+                // For 3x3, it should be fine with sorting + alpha-beta + memoization.
                 
                 for (const move of candidateMoves) {
                     const nextInv = { ...inv, [move.size]: inv[move.size] - 1 };
                     
-                    // Note: minimax always expects (myInv, enemyInv) order in args.
-                    // If isAi (Enemy), next turn is Me (Max), so we pass (oppInv, nextInv)
-                    // If !isAi (Me), next turn is Enemy (Min), so we pass (nextInv, oppInv)
                     let score;
                     if (isAi) {
-                         score = minimax(simulateMove(board, move, player), 4, -Infinity, Infinity, true, oppInv, nextInv);
+                         // AI is Minimizing player in minimax function
+                         score = minimax(simulateMove(board, move, player), 5, -Infinity, Infinity, true, oppInv, nextInv);
                     } else {
-                         score = minimax(simulateMove(board, move, player), 4, -Infinity, Infinity, false, nextInv, oppInv);
+                         score = minimax(simulateMove(board, move, player), 5, -Infinity, Infinity, false, nextInv, oppInv);
                     }
 
                     if (isAi) {
@@ -250,6 +278,7 @@
 
             const calculateSuggestion = () => {
                 setIsThinking(true);
+                // Slight delay to allow UI to render the thinking state
                 setTimeout(() => {
                     const move = getBestMove(false);
                     setSuggestion(move); 
@@ -263,7 +292,7 @@
                     const move = getBestMove(true);
                     if (move) executeMove(move, PLAYER_ENEMY);
                     setIsThinking(false);
-                }, 800);
+                }, 100); // Reduce artificial delay since calculation takes longer now
             };
 
             const executeMove = (move, player) => {
